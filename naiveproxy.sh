@@ -98,8 +98,8 @@ get_system_info(){
     # 获取版本信息
     inscore=$(cat /etc/caddy/version 2>/dev/null | head -n 1)
     insV=$(cat /etc/caddy/v 2>/dev/null)
-    latcore=$(curl -Ls https://data.jsdelivr.com/v1/package/gh/klzgrad/naiveproxy 2>/dev/null | sed -n 4p | tr -d ',"' | awk '{print $1}')
-    latestV=$(curl -sL https://gitlab.com/rwkgyg/naiveproxy-yg/-/raw/main/version 2>/dev/null | awk -F "更新内容" 'NR>2 {print $1; exit}')
+    latcore=$(curl -m 3 -Ls https://data.jsdelivr.com/v1/package/gh/klzgrad/naiveproxy 2>/dev/null | sed -n 4p | tr -d ',"' | awk '{print $1}')
+    latestV="本地私有版"
 }
 
 #===============================================================================
@@ -1049,6 +1049,8 @@ view_log(){
 # 主菜单
 #===============================================================================
 main_menu(){
+    clear
+    blue "正在初始化面板并检测系统环境，请稍候..."
     get_system_info
     load_config
     
