@@ -207,6 +207,7 @@ check_deps(){
             [[ " ${miss[*]} " =~ " cron " ]] && dnf install -y cronie
         fi
     }
+    true
 }
 
 #===============================================================================
@@ -217,6 +218,7 @@ init_config(){
     [[ ! -f $USERS_FILE ]] && touch $USERS_FILE
     [[ ! -f $DOMAINS_FILE ]] && touch $DOMAINS_FILE
     [[ ! -d $NAIVE_DIR ]] && mkdir -p $NAIVE_DIR
+    true
 }
 
 #===============================================================================
@@ -231,6 +233,7 @@ load_config(){
     [[ -f $DOMAINS_FILE ]] && while IFS=: read -r d b c k; do
         [[ -n $d && -n $b ]] && DOMAIN_BACKEND[$d]=$b && DOMAIN_CERT[$d]=$c && DOMAIN_KEY[$d]=$k
     done < <(grep -v '^#' $DOMAINS_FILE 2>/dev/null)
+    true
 }
 
 #===============================================================================
