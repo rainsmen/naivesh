@@ -578,7 +578,7 @@ validate_acme_installer(){
 
 ensure_acme(){
     local email="$1"
-    local installer="/tmp/naiveproxy-acme.sh"
+    local installer="/tmp/acme.sh"
 
     if [[ -f "$ACME_BIN" ]]; then
         validate_acme_installer "$ACME_BIN" || return 1
@@ -588,7 +588,7 @@ ensure_acme(){
         wget -qN "$REPO_URL/assets/acme.sh" -O "$installer" || { red "acme.sh 下载失败"; return 1; }
         validate_acme_installer "$installer" || { rm -f "$installer"; return 1; }
         chmod +x "$installer" || { rm -f "$installer"; return 1; }
-        "$installer" --install -m "$email" --home "$ACME_HOME" --no-profile || { rm -f "$installer"; return 1; }
+        (cd /tmp && ./acme.sh --install -m "$email" --home "$ACME_HOME" --no-profile) || { rm -f "$installer"; return 1; }
         rm -f "$installer"
     fi
 
