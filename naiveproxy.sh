@@ -6,7 +6,7 @@
 #===============================================================================
 
 export LANG=en_US.UTF-8
-set -e
+set -E
 shopt -s nullglob
 
 #===============================================================================
@@ -24,7 +24,18 @@ green(){ echo -e "\033[32m\033[01m$1\033[0m";}
 yellow(){ echo -e "\033[33m\033[01m$1\033[0m";}
 blue(){ echo -e "\033[36m\033[01m$1\033[0m";}
 white(){ echo -e "\033[37m\033[01m$1\033[0m";}
-readp(){ read -p "$(yellow "$1")" $2;}
+readp(){ read -r -p "$(yellow "$1")" "$2";}
+pause(){ read -r -p "按回车继续..." _; }
+
+run_action(){
+    "$@"
+    local status=$?
+    if [[ $status -ne 0 ]]; then
+        red "操作失败，退出码: $status"
+    fi
+    pause
+    return 0
+}
 
 #===============================================================================
 # 权限检查
@@ -69,7 +80,8 @@ get_system_info(){
     
     # 系统版本
     vsid=$(grep -i version_id /etc/os-release 2>/dev/null | cut -d \" -f2 | cut -d . -f1)
-    op=$(cat /etc/redhat-release 2>/dev/null || cat /etc/os-release 2>/dev/null | grep -i pretty_name | cut -d \" -f2)
+    op=$(cat /etc/redhat-release 2>/dev/null || grep -i pretty_name /etc/os-release 2>/dev/null | cut -d \" -f2)
+    [[ -z $op ]] && op="Unknown Linux"
     
     # 检测架构
     if [[ $(uname -m) = x86_64 ]]; then
@@ -84,7 +96,8 @@ get_system_info(){
     kernel_version=$(uname -r | cut -d "-" -f1)
     
     # 虚拟化检测
-    vi=$(systemd-detect-virt 2>/dev/null)
+    vi=$(systemd-detect-virt 2>/dev/null || true)
+    [[ -z $vi ]] && vi="none"
     
     # BBR状态检测
     if [[ -n $(sysctl net.ipv4.tcp_congestion_control 2>/dev/null | awk -F ' ' '{print $3}') ]]; then
@@ -96,9 +109,9 @@ get_system_info(){
     fi
     
     # 获取版本信息
-    inscore=$(cat /etc/caddy/version 2>/dev/null | head -n 1)
-    insV=$(cat /etc/caddy/v 2>/dev/null)
-    latcore=$(curl -m 3 -Ls https://data.jsdelivr.com/v1/package/gh/klzgrad/naiveproxy 2>/dev/null | sed -n 4p | tr -d ',"' | awk '{print $1}')
+    inscore=$(cat /etc/caddy/version 2>/dev/null | head -n 1 || true)
+    insV=$(cat /etc/caddy/v 2>/dev/null || true)
+    latcore=$(curl -m 3 -Ls https://data.jsdelivr.com/v1/package/gh/klzgrad/naiveproxy 2>/dev/null | sed -n 4p | tr -d ',"' | awk '{print $1}' || true)
     latestV="本地私有版"
 }
 
@@ -106,16 +119,16 @@ get_system_info(){
 # IPv4/IPv6 地址检测
 #===============================================================================
 v4v6(){
-    v4=$(curl -s4m5 icanhazip.com -k 2>/dev/null)
-    v6=$(curl -s6m5 icanhazip.com -k 2>/dev/null)
+    v4=$(curl -s4m5 icanhazip.com -k 2>/dev/null || true)
+    v6=$(curl -s6m5 icanhazip.com -k 2>/dev/null || true)
 }
 
 #===============================================================================
 # WARP 状态检测
 #===============================================================================
 warpcheck(){
-    wgcfv6=$(curl -s6m5 https://www.cloudflare.com/cdn-cgi/trace -k 2>/dev/null | grep warp | cut -d= -f2)
-    wgcfv4=$(curl -s4m5 https://www.cloudflare.com/cdn-cgi/trace -k 2>/dev/null | grep warp | cut -d= -f2)
+    wgcfv6=$(curl -s6m5 https://www.cloudflare.com/cdn-cgi/trace -k 2>/dev/null | grep warp | cut -d= -f2 || true)
+    wgcfv4=$(curl -s4m5 https://www.cloudflare.com/cdn-cgi/trace -k 2>/dev/null | grep warp | cut -d= -f2 || true)
 }
 
 #===============================================================================
@@ -124,7 +137,7 @@ warpcheck(){
 v6(){
     warpcheck
     if [[ ! $wgcfv4 =~ on|plus && ! $wgcfv6 =~ on|plus ]]; then
-        v4=$(curl -s4m5 icanhazip.com -k 2>/dev/null)
+        v4=$(curl -s4m5 icanhazip.com -k 2>/dev/null || true)
         if [[ -z $v4 ]]; then
             yellow "检测到 纯IPV6 VPS，添加DNS64"
             echo -e "nameserver 2a00:1098:2b::1\nnameserver 2a00:1098:2c::1\nnameserver 2a01:4f8:c2c:123f::1" > /etc/resolv.conf
@@ -191,34 +204,75 @@ tun_support(){
 # 依赖安装
 #===============================================================================
 check_deps(){
-    local miss=()
-    for cmd in curl wget tar systemctl ss ip awk grep sed jq qrencode cron; do
-        command -v $cmd &>/dev/null || miss+=($cmd)
-    done
-    [[ ${#miss[@]} -gt 0 ]] && {
-        yellow "正在安装缺少的依赖: ${miss[*]}"
-        if [ -x "$(command -v apt-get)" ]; then
-            apt-get update -y && apt-get install -y ${miss[*]}
-        elif [ -x "$(command -v yum)" ]; then
-            yum update -y && yum install -y ${miss[*]}
-            [[ " ${miss[*]} " =~ " cron " ]] && yum install -y cronie
-        elif [ -x "$(command -v dnf)" ]; then
-            dnf update -y && dnf install -y ${miss[*]}
-            [[ " ${miss[*]} " =~ " cron " ]] && dnf install -y cronie
-        fi
+    local miss=() pkgs=()
+
+    add_pkg(){
+        local pkg=$1 existing
+        for existing in "${pkgs[@]}"; do
+            [[ $existing == "$pkg" ]] && return
+        done
+        pkgs+=("$pkg")
     }
-    true
+
+    for cmd in curl wget tar systemctl ss ip awk grep sed jq qrencode cron; do
+        if [[ $cmd == "cron" ]]; then
+            command -v cron &>/dev/null || command -v crond &>/dev/null || miss+=("cron")
+        else
+            command -v "$cmd" &>/dev/null || miss+=("$cmd")
+        fi
+    done
+
+    [[ ${#miss[@]} -eq 0 ]] && return 0
+
+    yellow "正在安装缺少的依赖: ${miss[*]}"
+
+    if command -v apt-get &>/dev/null; then
+        for cmd in "${miss[@]}"; do
+            case "$cmd" in
+                ss|ip) add_pkg "iproute2" ;;
+                awk) add_pkg "gawk" ;;
+                systemctl) add_pkg "systemd" ;;
+                *) add_pkg "$cmd" ;;
+            esac
+        done
+        apt-get update -y || return 1
+        DEBIAN_FRONTEND=noninteractive apt-get install -y "${pkgs[@]}" || return 1
+    elif command -v yum &>/dev/null; then
+        for cmd in "${miss[@]}"; do
+            case "$cmd" in
+                ss|ip) add_pkg "iproute" ;;
+                cron) add_pkg "cronie" ;;
+                awk) add_pkg "gawk" ;;
+                systemctl) add_pkg "systemd" ;;
+                *) add_pkg "$cmd" ;;
+            esac
+        done
+        yum install -y "${pkgs[@]}" || return 1
+    elif command -v dnf &>/dev/null; then
+        for cmd in "${miss[@]}"; do
+            case "$cmd" in
+                ss|ip) add_pkg "iproute" ;;
+                cron) add_pkg "cronie" ;;
+                awk) add_pkg "gawk" ;;
+                systemctl) add_pkg "systemd" ;;
+                *) add_pkg "$cmd" ;;
+            esac
+        done
+        dnf install -y "${pkgs[@]}" || return 1
+    else
+        red "未找到 apt/yum/dnf，无法自动安装依赖: ${miss[*]}"
+        return 1
+    fi
 }
 
 #===============================================================================
 # 初始化配置目录
 #===============================================================================
 init_config(){
-    [[ ! -d $CONFIG_DIR ]] && mkdir -p $CONFIG_DIR
-    [[ ! -f $USERS_FILE ]] && touch $USERS_FILE
-    [[ ! -f $DOMAINS_FILE ]] && touch $DOMAINS_FILE
-    [[ ! -d $NAIVE_DIR ]] && mkdir -p $NAIVE_DIR
-    true
+    mkdir -p "$CONFIG_DIR" "$NAIVE_DIR" /etc/caddy || return 1
+    [[ ! -f $USERS_FILE ]] && touch "$USERS_FILE"
+    [[ ! -f $DOMAINS_FILE ]] && touch "$DOMAINS_FILE"
+    return 0
 }
 
 #===============================================================================
@@ -271,7 +325,7 @@ install_caddy(){
     readp "请选择 [1/2]:" chcaddy
     
     if [[ -z $chcaddy || $chcaddy == "1" ]]; then
-        cd /tmp
+        cd /tmp || return 1
         rm -f caddy2-naive-linux-*.tar.gz caddy.tar.gz
         
         # 多下载源尝试
@@ -283,18 +337,19 @@ install_caddy(){
         fi
         
         [[ ! -f caddy.tar.gz ]] && { red "下载失败"; return 1; }
-        tar -zxf caddy.tar.gz
-        mv caddy $BINARY
-        chmod +x $BINARY
+        tar -zxf caddy.tar.gz || { red "解压 Caddy 失败"; return 1; }
+        [[ -f caddy ]] || { red "压缩包内未找到 caddy 可执行文件"; return 1; }
+        mv caddy "$BINARY" || return 1
+        chmod +x "$BINARY" || return 1
         rm -f caddy.tar.gz
         
         # 保存版本信息
+        mkdir -p /etc/caddy
         echo "$latcore" > /etc/caddy/version 2>/dev/null || true
         
         green "Caddy 安装完成: $($BINARY version 2>&1 | head -1)"
     elif [[ $chcaddy == "2" ]]; then
         yellow "开始在线编译..."
-        go env -w GO111MODULE=on
         if ! command -v go &>/dev/null; then
             yellow "安装 Go 环境..."
             if [[ $release = Centos ]]; then
@@ -316,9 +371,11 @@ install_caddy(){
                 apt install golang-go -y
             fi
         fi
+        command -v go &>/dev/null || { red "Go 安装失败或未加入 PATH"; return 1; }
+        go env -w GO111MODULE=on || return 1
         
-        go install github.com/caddyserver/xcaddy/cmd/xcaddy@latest
-        ~/go/bin/xcaddy build --with github.com/caddyserver/forwardproxy@caddy2=github.com/klzgrad/forwardproxy@naive
+        go install github.com/caddyserver/xcaddy/cmd/xcaddy@latest || return 1
+        ~/go/bin/xcaddy build --with github.com/caddyserver/forwardproxy@caddy2=github.com/klzgrad/forwardproxy@naive || return 1
         [[ -f /root/caddy ]] && mv /root/caddy $BINARY && chmod +x $BINARY || { red "编译失败"; return 1; }
         green "在线编译安装完成"
     fi
@@ -329,7 +386,8 @@ install_caddy(){
 #===============================================================================
 install_service(){
     green "\n===== 安装服务 ====="
-    cat > $SERVICEFILE <<EOF
+    mkdir -p "$(dirname "$SERVICEFILE")" || return 1
+    cat > "$SERVICEFILE" <<EOF
 [Unit]
 Description=NaiveProxy Multi-User Service
 Documentation=https://github.com/klzgrad/naiveproxy
@@ -353,8 +411,8 @@ ProtectSystem=false
 [Install]
 WantedBy=multi-user.target
 EOF
-    systemctl daemon-reload
-    systemctl enable naiveproxy >/dev/null 2>&1
+    systemctl daemon-reload || return 1
+    systemctl enable naiveproxy >/dev/null 2>&1 || return 1
     green "服务安装完成"
 }
 
@@ -460,7 +518,7 @@ add_domain(){
     
     save_domains
     green "域名 $domain 添加成功"
-    yellow "请选择【9】申请证书"
+    yellow "请选择【11】申请证书"
 }
 
 #===============================================================================
@@ -528,9 +586,9 @@ apply_cert(){
     
     if ! command -v acme.sh &>/dev/null; then
         yellow "安装 acme.sh..."
-        wget -qN "$REPO_URL/assets/acme.sh" -O /tmp/acme.sh
-        chmod +x /tmp/acme.sh
-        /tmp/acme.sh --install -m $email
+        wget -qN "$REPO_URL/assets/acme.sh" -O /tmp/acme.sh || { red "acme.sh 下载失败"; return 1; }
+        chmod +x /tmp/acme.sh || return 1
+        /tmp/acme.sh --install -m "$email" || return 1
         rm -f /tmp/acme.sh
     fi
     
@@ -540,7 +598,7 @@ apply_cert(){
     systemctl stop caddy 2>/dev/null || true
     systemctl stop naiveproxy 2>/dev/null || true
 
-    ~/.acme.sh/acme.sh --issue -d $domain --standalone -k 2048 --force
+    ~/.acme.sh/acme.sh --issue -d "$domain" --standalone -k 2048 --force || { red "证书申请命令执行失败"; return 1; }
     
     local cert_path="$cert_dir/cert.crt"
     local key_path="$cert_dir/private.key"
@@ -654,6 +712,12 @@ restart_service(){
     fi
 }
 
+generate_and_restart(){
+    generate_caddyfile || return 1
+    restart_service || return 1
+    show_share || return 1
+}
+
 #===============================================================================
 # 启动服务
 #===============================================================================
@@ -676,6 +740,13 @@ stop_service(){
 }
 
 #===============================================================================
+# 获取当前代理端口
+#===============================================================================
+get_proxy_port(){
+    awk '/^[[:alnum:].-]+:[0-9]+[[:space:]]*\{/ { sub(/^.*:/, "", $1); print $1; exit }' "$CADDYFILE" 2>/dev/null
+}
+
+#===============================================================================
 # 显示分享信息
 #===============================================================================
 show_share(){
@@ -689,8 +760,12 @@ show_share(){
     red "======================================================================================"
     
     echo
+    local port
+    port=$(get_proxy_port)
+    [[ -z $port ]] && port="443"
+
     green "当前监听端口："
-    blue "$(cat $CADDYFILE 2>/dev/null | awk '{print $1}' | grep ':' | tr -d ',:')"
+    blue "$port"
     
     echo
     green "V2rayN 配置文件 (保存到 $NAIVE_DIR/v2rayn.json)："
@@ -708,14 +783,13 @@ show_share(){
             break
         done
         
-        local port="443"
-        cat > $NAIVE_DIR/v2rayn.json <<EOF
+        cat > "$NAIVE_DIR/v2rayn.json" <<EOF
 {
   "listen": "socks://127.0.0.1:1080",
   "proxy": "https://${first_user}:${USER_PASS[$first_user]}@${first_domain}:${port}"
 }
 EOF
-        yellow "$(cat $NAIVE_DIR/v2rayn.json)"
+        yellow "$(cat "$NAIVE_DIR/v2rayn.json")"
         
         echo
         green "分享链接："
@@ -723,14 +797,16 @@ EOF
             for domain in "${!DOMAIN_BACKEND[@]}"; do
                 [[ -n ${DOMAIN_CERT[$domain]} && -f ${DOMAIN_CERT[$domain]} ]] || continue
                 local url="naive+https://${user}:${USER_PASS[$user]}@${domain}:${port}?padding=true#NaiveProxy-${user}"
-                echo "$url" > $NAIVE_DIR/URL.txt
+                echo "$url" > "$NAIVE_DIR/URL.txt"
                 yellow "$url"
             done
         done
         
         echo
         green "二维码分享链接 (Nekobox)："
-        qrencode -o - -t ANSIUTF8 "$(cat $NAIVE_DIR/URL.txt 2>/dev/null)"
+        if command -v qrencode &>/dev/null && [[ -s $NAIVE_DIR/URL.txt ]]; then
+            qrencode -o - -t ANSIUTF8 "$(cat "$NAIVE_DIR/URL.txt")"
+        fi
     fi
     
     red "======================================================================================"
@@ -870,8 +946,8 @@ update_script(){
 #===============================================================================
 update_kernel(){
     green "\n===== 更新内核 ====="
-    install_caddy
-    systemctl restart naiveproxy
+    install_caddy || return 1
+    systemctl restart naiveproxy || return 1
     green "内核更新成功"
 }
 
@@ -884,7 +960,7 @@ quick_install(){
     fi
     
     # 检查依赖
-    check_deps
+    check_deps || return 1
     
     # IPv6 支持
     v6
@@ -899,7 +975,7 @@ quick_install(){
     install_caddy || return 1
     
     # 安装服务
-    install_service
+    install_service || return 1
     
     # 添加用户
     echo
@@ -930,7 +1006,7 @@ quick_install(){
     readp "请输入后端伪装网址（回车默认 ygkkk.blogspot.com）:" backend
     [[ -z $backend ]] && backend="ygkkk.blogspot.com"
     
-    DOMAIN_BACKEND[$domain]=""
+    DOMAIN_BACKEND[$domain]=$backend
     save_domains
     
     # 申请证书
@@ -950,9 +1026,9 @@ quick_install(){
         
         if ! command -v acme.sh &>/dev/null; then
             yellow "安装 acme.sh..."
-            wget -qN "$REPO_URL/assets/acme.sh" -O /tmp/acme.sh
-            chmod +x /tmp/acme.sh
-            /tmp/acme.sh --install -m $email
+            wget -qN "$REPO_URL/assets/acme.sh" -O /tmp/acme.sh || { red "acme.sh 下载失败"; return 1; }
+            chmod +x /tmp/acme.sh || return 1
+            /tmp/acme.sh --install -m "$email" || return 1
             rm -f /tmp/acme.sh
         fi
         
@@ -962,11 +1038,11 @@ quick_install(){
         systemctl stop caddy 2>/dev/null || true
         systemctl stop naiveproxy 2>/dev/null || true
 
-        ~/.acme.sh/acme.sh --issue -d $domain --standalone -k 2048 --force
+        ~/.acme.sh/acme.sh --issue -d "$domain" --standalone -k 2048 --force || { red "证书申请命令执行失败"; return 1; }
         
         if [[ -f ~/.acme.sh/$domain/fullchain.cer && -f ~/.acme.sh/$domain/$domain.key ]]; then
-            cp ~/.acme.sh/$domain/fullchain.cer "$cert_dir/cert.crt"
-            cp ~/.acme.sh/$domain/$domain.key "$cert_dir/private.key"
+            cp ~/.acme.sh/$domain/fullchain.cer "$cert_dir/cert.crt" || return 1
+            cp ~/.acme.sh/$domain/$domain.key "$cert_dir/private.key" || return 1
             DOMAIN_CERT[$domain]="$cert_dir/cert.crt"
             DOMAIN_KEY[$domain]="$cert_dir/private.key"
             DOMAIN_BACKEND[$domain]=$backend
@@ -1012,7 +1088,7 @@ quick_install(){
         
         # 生成分享链接
         local url="naive+https://${user}:${USER_PASS[$user]}@${domain}:${port}?padding=true#NaiveProxy-${user}"
-        echo $url > $NAIVE_DIR/URL.txt
+        echo "$url" > "$NAIVE_DIR/URL.txt"
         
         show_share
     fi
@@ -1137,28 +1213,28 @@ main_menu(){
         readp "请输入数字【0-20】:" Input
         
         case "$Input" in
-            1) quick_install;;
-            2) uninstall;;
-            3) install_caddy;;
-            4) install_service;;
-            5) add_user;;
-            6) del_user;;
-            7) list_users; read -p "按回车继续...";;
-            8) add_domain;;
-            9) del_domain;;
-            10) list_domains; read -p "按回车继续...";;
-            11) apply_cert;;
-            12) generate_caddyfile && restart_service && show_share;;
-            13) start_service;;
-            14) stop_service;;
-            15) multi_port;;
-            16) show_status; read -p "按回车继续...";;
-            17) show_share; read -p "按回车继续...";;
+            1) run_action quick_install;;
+            2) run_action uninstall;;
+            3) run_action install_caddy;;
+            4) run_action install_service;;
+            5) run_action add_user;;
+            6) run_action del_user;;
+            7) run_action list_users;;
+            8) run_action add_domain;;
+            9) run_action del_domain;;
+            10) run_action list_domains;;
+            11) run_action apply_cert;;
+            12) run_action generate_and_restart;;
+            13) run_action start_service;;
+            14) run_action stop_service;;
+            15) run_action multi_port;;
+            16) run_action show_status;;
+            17) run_action show_share;;
             18) view_log;;
-            19) update_script;;
-            20) update_kernel;;
+            19) run_action update_script;;
+            20) run_action update_kernel;;
             0) exit 0;;
-            *) red "输入错误";;
+            *) red "输入错误"; pause;;
         esac
     done
 }
@@ -1166,6 +1242,6 @@ main_menu(){
 #===============================================================================
 # 程序入口
 #===============================================================================
-check_deps
-init_config
+check_deps || yellow "依赖安装未完成，部分功能可能不可用"
+init_config || { red "初始化配置目录失败"; exit 1; }
 main_menu
