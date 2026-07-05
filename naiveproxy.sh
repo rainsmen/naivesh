@@ -576,6 +576,31 @@ validate_acme_installer(){
     fi
 }
 
+cleanup_acme_profile(){
+    local env_file="$ACME_HOME/acme.sh.env"
+    [[ -f "$env_file" ]] && return 0
+
+    local profile
+    for profile in /root/.bashrc /root/.profile /root/.bash_profile; do
+        [[ -f "$profile" ]] || continue
+        sed -i "\#${env_file}#d" "$profile" 2>/dev/null || true
+    done
+}
+
+install_shortcut(){
+    local target="/root/naiveproxy.sh"
+    local source_path="${BASH_SOURCE[0]}"
+
+    if [[ -f "$source_path" && "$source_path" != "$target" ]]; then
+        cp -f "$source_path" "$target" || return 1
+    elif [[ ! -f "$target" ]]; then
+        wget -qN "$REPO_URL/naiveproxy.sh" -O "$target" || return 1
+    fi
+
+    chmod +x "$target" || return 1
+    ln -sf "$target" /usr/bin/na || return 1
+}
+
 ensure_acme(){
     local email="$1"
     local installer="/tmp/acme.sh"
@@ -593,6 +618,7 @@ ensure_acme(){
     fi
 
     [[ -x "$ACME_BIN" ]] || { red "acme.sh 安装失败: $ACME_BIN 不存在或不可执行"; return 1; }
+    cleanup_acme_profile
     "$ACME_BIN" --set-default-ca --server letsencrypt >/dev/null 2>&1 || true
 }
 
@@ -671,6 +697,7 @@ generate_caddyfile(){
     
     cat >> $CADDYFILE <<EOF
 {
+    order forward_proxy before reverse_proxy
     http_port $http_port
     https_port $port
     auto_https off
@@ -685,10 +712,9 @@ EOF
         
         if [[ -n $cert && -n $key && -f $cert && -f $key ]]; then
             cat >> $CADDYFILE <<EOF
-$domain:$port {
+:$port, $domain:$port {
     tls $cert $key
-    route {
-        forward_proxy {
+    forward_proxy {
 EOF
             for user in "${!USER_PASS[@]}"; do
                 echo "            basic_auth ${user} ${USER_PASS[$user]}" >> $CADDYFILE
@@ -701,9 +727,7 @@ EOF
         }
         reverse_proxy https://${DOMAIN_BACKEND[$domain]} {
             header_up Host {upstream_hostport}
-            header_up X-Forwarded-Host {host}
         }
-    }
 }
 EOF
             ((domain_count++))
@@ -1103,7 +1127,7 @@ quick_install(){
     # 启动服务
     if suss_service; then
         # 安装快捷命令
-        ln -sf $0 /usr/bin/na 2>/dev/null
+        install_shortcut || yellow "快捷命令 na 安装失败，请手动执行 bash /root/naiveproxy.sh"
         
         # 保存版本
         echo "$latestV" > /etc/caddy/v 2>/dev/null
