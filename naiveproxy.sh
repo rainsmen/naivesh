@@ -54,6 +54,8 @@ SERVICEFILE="/etc/systemd/system/naiveproxy.service"
 BINARY="/usr/bin/caddy"
 NAIVE_DIR="/root/naive"
 BACKUP_CADDYFILE="$CONFIG_DIR/reCaddyfile"
+ACME_HOME="/root/.acme.sh"
+ACME_BIN="$ACME_HOME/acme.sh"
 
 #===============================================================================
 # 全局变量 - 系统检测
@@ -563,6 +565,55 @@ list_domains(){
 }
 
 #===============================================================================
+# acme.sh 安装与签发
+#===============================================================================
+validate_acme_installer(){
+    local file="$1"
+    if ! grep -q 'PROJECT_NAME="acme.sh"' "$file" 2>/dev/null || grep -q -E 'Acme-yg|甬哥' "$file" 2>/dev/null; then
+        red "下载到的 acme.sh 不是官方 acme.sh，已停止执行"
+        yellow "请检查 $REPO_URL/assets/acme.sh 是否为本仓库 assets/acme.sh"
+        return 1
+    fi
+}
+
+ensure_acme(){
+    local email="$1"
+    local installer="/tmp/naiveproxy-acme.sh"
+
+    if [[ -f "$ACME_BIN" ]]; then
+        validate_acme_installer "$ACME_BIN" || return 1
+        [[ -x "$ACME_BIN" ]] || chmod +x "$ACME_BIN" || return 1
+    else
+        yellow "安装 acme.sh..."
+        wget -qN "$REPO_URL/assets/acme.sh" -O "$installer" || { red "acme.sh 下载失败"; return 1; }
+        validate_acme_installer "$installer" || { rm -f "$installer"; return 1; }
+        chmod +x "$installer" || { rm -f "$installer"; return 1; }
+        "$installer" --install -m "$email" --home "$ACME_HOME" --no-profile || { rm -f "$installer"; return 1; }
+        rm -f "$installer"
+    fi
+
+    [[ -x "$ACME_BIN" ]] || { red "acme.sh 安装失败: $ACME_BIN 不存在或不可执行"; return 1; }
+    "$ACME_BIN" --set-default-ca --server letsencrypt >/dev/null 2>&1 || true
+}
+
+stop_web_services_for_acme(){
+    systemctl stop nginx 2>/dev/null || true
+    systemctl stop apache2 2>/dev/null || true
+    systemctl stop httpd 2>/dev/null || true
+    systemctl stop caddy 2>/dev/null || true
+    systemctl stop naiveproxy 2>/dev/null || true
+}
+
+issue_cert_standalone(){
+    local domain="$1"
+    local email="$2"
+
+    ensure_acme "$email" || return 1
+    stop_web_services_for_acme
+    "$ACME_BIN" --issue --server letsencrypt -d "$domain" --standalone -k 2048 --force || { red "证书申请命令执行失败"; return 1; }
+}
+
+#===============================================================================
 # 申请证书
 #===============================================================================
 apply_cert(){
@@ -584,28 +635,14 @@ apply_cert(){
     mkdir -p $cert_dir
     mkdir -p "$CONFIG_DIR/www"
     
-    if ! command -v acme.sh &>/dev/null; then
-        yellow "安装 acme.sh..."
-        wget -qN "$REPO_URL/assets/acme.sh" -O /tmp/acme.sh || { red "acme.sh 下载失败"; return 1; }
-        chmod +x /tmp/acme.sh || return 1
-        /tmp/acme.sh --install -m "$email" || return 1
-        rm -f /tmp/acme.sh
-    fi
-    
-    systemctl stop nginx 2>/dev/null || true
-    systemctl stop apache2 2>/dev/null || true
-    systemctl stop httpd 2>/dev/null || true
-    systemctl stop caddy 2>/dev/null || true
-    systemctl stop naiveproxy 2>/dev/null || true
-
-    ~/.acme.sh/acme.sh --issue -d "$domain" --standalone -k 2048 --force || { red "证书申请命令执行失败"; return 1; }
+    issue_cert_standalone "$domain" "$email" || return 1
     
     local cert_path="$cert_dir/cert.crt"
     local key_path="$cert_dir/private.key"
     
-    if [[ -f ~/.acme.sh/$domain/fullchain.cer && -f ~/.acme.sh/$domain/$domain.key ]]; then
-        cp ~/.acme.sh/$domain/fullchain.cer $cert_path
-        cp ~/.acme.sh/$domain/$domain.key $key_path
+    if [[ -f "$ACME_HOME/$domain/fullchain.cer" && -f "$ACME_HOME/$domain/$domain.key" ]]; then
+        cp "$ACME_HOME/$domain/fullchain.cer" "$cert_path"
+        cp "$ACME_HOME/$domain/$domain.key" "$key_path"
         DOMAIN_CERT[$domain]=$cert_path
         DOMAIN_KEY[$domain]=$key_path
         save_domains
@@ -1024,25 +1061,11 @@ quick_install(){
         mkdir -p $cert_dir
         mkdir -p "$CONFIG_DIR/www"
         
-        if ! command -v acme.sh &>/dev/null; then
-            yellow "安装 acme.sh..."
-            wget -qN "$REPO_URL/assets/acme.sh" -O /tmp/acme.sh || { red "acme.sh 下载失败"; return 1; }
-            chmod +x /tmp/acme.sh || return 1
-            /tmp/acme.sh --install -m "$email" || return 1
-            rm -f /tmp/acme.sh
-        fi
+        issue_cert_standalone "$domain" "$email" || return 1
         
-        systemctl stop nginx 2>/dev/null || true
-        systemctl stop apache2 2>/dev/null || true
-        systemctl stop httpd 2>/dev/null || true
-        systemctl stop caddy 2>/dev/null || true
-        systemctl stop naiveproxy 2>/dev/null || true
-
-        ~/.acme.sh/acme.sh --issue -d "$domain" --standalone -k 2048 --force || { red "证书申请命令执行失败"; return 1; }
-        
-        if [[ -f ~/.acme.sh/$domain/fullchain.cer && -f ~/.acme.sh/$domain/$domain.key ]]; then
-            cp ~/.acme.sh/$domain/fullchain.cer "$cert_dir/cert.crt" || return 1
-            cp ~/.acme.sh/$domain/$domain.key "$cert_dir/private.key" || return 1
+        if [[ -f "$ACME_HOME/$domain/fullchain.cer" && -f "$ACME_HOME/$domain/$domain.key" ]]; then
+            cp "$ACME_HOME/$domain/fullchain.cer" "$cert_dir/cert.crt" || return 1
+            cp "$ACME_HOME/$domain/$domain.key" "$cert_dir/private.key" || return 1
             DOMAIN_CERT[$domain]="$cert_dir/cert.crt"
             DOMAIN_KEY[$domain]="$cert_dir/private.key"
             DOMAIN_BACKEND[$domain]=$backend
