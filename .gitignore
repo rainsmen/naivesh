@@ -1,0 +1,13 @@
+# System and editor files
+.DS_Store
+*.swp
+*~
+*.bak
+
+# Temporary build & test files
+/tmp/
+*.tmp
+*.log
+
+# Scratch
+scratch/
