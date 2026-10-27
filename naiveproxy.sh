@@ -312,6 +312,9 @@ check_deps(){
         red "未找到 apt/yum/dnf，无法自动安装依赖: ${miss[*]}"
         return 1
     fi
+
+    # 确保 cron 服务已启用并立即运行 (CentOS/RHEL 下 cronie 默认未启动)
+    systemctl enable --now cron 2>/dev/null || systemctl enable --now crond 2>/dev/null || true
 }
 
 #===============================================================================
@@ -327,6 +330,10 @@ init_config(){
     [[ ! -f $PORTS_FILE ]] && echo "443" > "$PORTS_FILE"
 
     chmod 600 "$USERS_FILE" "$DOMAINS_FILE" "$PORTS_FILE" 2>/dev/null || true
+
+    # 自动加载已有配置并自愈历史遗留的 Crontab 与续期重载钩子
+    load_config
+    fix_acme_cron_and_hooks
     return 0
 }
 
@@ -697,6 +704,39 @@ del_domain(){
 }
 
 #===============================================================================
+# 证书状态格式化展示
+#===============================================================================
+get_cert_status_desc(){
+    local c_file="$1"
+    if [[ -z $c_file || ! -f $c_file ]]; then
+        echo -e "${red}未申请${plain}"
+        return
+    fi
+    if command -v openssl &>/dev/null; then
+        local end_date exp_epoch now_epoch days_left
+        end_date=$(openssl x509 -enddate -noout -in "$c_file" 2>/dev/null | cut -d= -f2)
+        if [[ -n $end_date ]]; then
+            exp_epoch=$(date -d "$end_date" +%s 2>/dev/null || date -j -f "%b %d %T %Y %Z" "$end_date" +%s 2>/dev/null)
+            now_epoch=$(date +%s)
+            if [[ -n $exp_epoch ]]; then
+                days_left=$(( (exp_epoch - now_epoch) / 86400 ))
+                if [[ $days_left -lt 0 ]]; then
+                    echo -e "${red}已过期 (失效 $(( -days_left )) 天)${plain}"
+                    return
+                elif [[ $days_left -le 30 ]]; then
+                    echo -e "${yellow}即将到期 (剩余 ${days_left} 天，待自动续期)${plain}"
+                    return
+                else
+                    echo -e "${green}有效 (剩余 ${days_left} 天)${plain}"
+                    return
+                fi
+            fi
+        fi
+    fi
+    echo -e "${green}已配置${plain}"
+}
+
+#===============================================================================
 # 域名列表
 #===============================================================================
 list_domains(){
@@ -707,11 +747,60 @@ list_domains(){
     fi
     green "─────────── 域名列表 ───────────"
     for d in "${!DOMAIN_BACKEND[@]}"; do
-        local cert_st="未申请"
-        [[ -n ${DOMAIN_CERT[$d]} && -f ${DOMAIN_CERT[$d]} ]] && cert_st="已配置"
-        blue "域名: $d  反代后端: ${DOMAIN_BACKEND[$d]}  证书状态: $cert_st"
+        local cert_st
+        cert_st=$(get_cert_status_desc "${DOMAIN_CERT[$d]}")
+        echo -e "  ${blue}域名:${plain} $d  ${blue}反代后端:${plain} ${DOMAIN_BACKEND[$d]}  ${blue}证书状态:${plain} $cert_st"
     done
     green "────────────────────────────────"
+}
+
+#===============================================================================
+# 自动检测并修复 Crontab 任务与证书自动续期钩子
+#===============================================================================
+fix_acme_cron_and_hooks(){
+    # 1. 确保 cron/crond 服务在各系统上处于 active 且自启状态
+    systemctl enable --now cron 2>/dev/null || systemctl enable --now crond 2>/dev/null || true
+
+    # 2. 清洗旧版本脚本遗留的带有错误语法的 crontab（如在用户级 crontab 中误写了 root 用户名字段）
+    if crontab -l 2>/dev/null | grep -E -q "root[[:space:]]+(bash[[:space:]]+)?.*acme\.sh"; then
+        yellow "检测到历史 crontab 包含错误语法，正在自动清理修复..."
+        crontab -l 2>/dev/null | grep -E -v "root[[:space:]]+(bash[[:space:]]+)?.*acme\.sh" | crontab - 2>/dev/null || true
+    fi
+
+    # 3. 确保 acme.sh 标准 cron 任务已安装，且开启自动在线更新
+    if [[ -x "$ACME_BIN" ]]; then
+        if ! crontab -l 2>/dev/null | grep -q "$ACME_BIN --cron" && ! crontab -l 2>/dev/null | grep -q "acme\.sh.*--cron"; then
+            "$ACME_BIN" --install-cronjob >/dev/null 2>&1 || true
+        fi
+        "$ACME_BIN" --upgrade --auto-upgrade >/dev/null 2>&1 || true
+    fi
+
+    # 4. 自动扫描并为已有配置的域名补齐自动续期与热重载钩子
+    if [[ -x "$ACME_BIN" && -f "$DOMAINS_FILE" ]]; then
+        for d in "${!DOMAIN_BACKEND[@]}"; do
+            local c_path="${DOMAIN_CERT[$d]}"
+            local k_path="${DOMAIN_KEY[$d]}"
+            local acme_d_conf="$ACME_HOME/$d/$d.conf"
+            local acme_d_ecc_conf="$ACME_HOME/${d}_ecc/${d}.conf"
+
+            if [[ -n $c_path && -f $c_path && -n $k_path && -f $k_path ]]; then
+                local needs_hook=0
+                if [[ -f "$acme_d_conf" ]] && ! grep -q "Le_RealFullChainPath" "$acme_d_conf" 2>/dev/null; then
+                    needs_hook=1
+                elif [[ -f "$acme_d_ecc_conf" ]] && ! grep -q "Le_RealFullChainPath" "$acme_d_ecc_conf" 2>/dev/null; then
+                    needs_hook=1
+                fi
+
+                if [[ $needs_hook -eq 1 ]]; then
+                    yellow "检测到域名 $d 尚未注册自动续期热重载钩子，正在自动补齐..."
+                    "$ACME_BIN" --install-cert -d "$d" \
+                        --key-file "$k_path" \
+                        --fullchain-file "$c_path" \
+                        --reloadcmd "systemctl reload naiveproxy 2>/dev/null || systemctl restart naiveproxy 2>/dev/null || true" >/dev/null 2>&1 || true
+                fi
+            fi
+        done
+    fi
 }
 
 #===============================================================================
@@ -764,6 +853,7 @@ ensure_acme(){
 
     [[ -x "$ACME_BIN" ]] || { red "acme.sh 安装失败: $ACME_BIN 不存在或不可执行"; return 1; }
     "$ACME_BIN" --set-default-ca --server letsencrypt >/dev/null 2>&1 || true
+    fix_acme_cron_and_hooks
 }
 
 stop_web_services_for_acme(){
@@ -784,8 +874,8 @@ issue_cert_standalone(){
     
     yellow "使用 Standalone 模式通过 Let's Encrypt 申请证书..."
     "$ACME_BIN" --issue --server letsencrypt -d "$domain" --standalone -k 2048 --force \
-        --pre-hook "systemctl stop naiveproxy nginx apache2 caddy 2>/dev/null || true" \
-        --post-hook "systemctl start naiveproxy 2>/dev/null || true"
+        --pre-hook "systemctl stop nginx apache2 httpd 2>/dev/null || true; if ss -tunlp 2>/dev/null | grep -q ':80 '; then systemctl stop naiveproxy 2>/dev/null || true; fi" \
+        --post-hook "systemctl start nginx apache2 httpd 2>/dev/null || true; if systemctl is-enabled naiveproxy >/dev/null 2>&1; then systemctl start naiveproxy 2>/dev/null || true; fi"
 }
 
 #===============================================================================
@@ -832,13 +922,16 @@ apply_cert(){
         fi
         
         # 使用官方 install-cert 安装证书并注册 reloadcmd，实现 100% 自动无感续期
-        "$ACME_BIN" --install-cert -d "$domain" \
+        if "$ACME_BIN" --install-cert -d "$domain" \
             --key-file "$key_path" \
             --fullchain-file "$cert_path" \
-            --reloadcmd "systemctl reload naiveproxy 2>/dev/null || systemctl restart naiveproxy 2>/dev/null || true" >/dev/null 2>&1 || {
-                cp -f "$ACME_HOME/$domain/fullchain.cer" "$cert_path" 2>/dev/null || cp -f "$ACME_HOME/${domain}_ecc/fullchain.cer" "$cert_path" 2>/dev/null || true
-                cp -f "$ACME_HOME/$domain/$domain.key" "$key_path" 2>/dev/null || cp -f "$ACME_HOME/${domain}_ecc/$domain.key" "$key_path" 2>/dev/null || true
-            }
+            --reloadcmd "systemctl reload naiveproxy 2>/dev/null || systemctl restart naiveproxy 2>/dev/null || true" >/dev/null 2>&1; then
+            green "已成功注册 acme.sh 自动无感续期与服务热重载钩子"
+        else
+            yellow "install-cert 注册钩子返回异常，执行备用拷贝并尝试保留配置..."
+            cp -f "$ACME_HOME/$domain/fullchain.cer" "$cert_path" 2>/dev/null || cp -f "$ACME_HOME/${domain}_ecc/fullchain.cer" "$cert_path" 2>/dev/null || true
+            cp -f "$ACME_HOME/$domain/$domain.key" "$key_path" 2>/dev/null || cp -f "$ACME_HOME/${domain}_ecc/$domain.key" "$key_path" 2>/dev/null || true
+        fi
     else
         readp "请输入证书公钥文件路径 (如 /root/cert.crt):" user_cert
         readp "请输入证书私钥文件路径 (如 /root/private.key):" user_key
@@ -1142,9 +1235,9 @@ show_status(){
         echo -e "  ${yellow}暂无域名${plain}"
     else
         for d in "${!DOMAIN_BACKEND[@]}"; do
-            local cert_st="${red}未申请${plain}"
-            [[ -n ${DOMAIN_CERT[$d]} && -f ${DOMAIN_CERT[$d]} ]] && cert_st="${green}已配置${plain}"
-            echo -e "  ${green}域名:${plain} $d  ${green}伪装后端:${plain} ${DOMAIN_BACKEND[$d]}  ${green}证书:${plain} $cert_st"
+            local cert_st
+            cert_st=$(get_cert_status_desc "${DOMAIN_CERT[$d]}")
+            echo -e "  ${green}域名:${plain} $d  ${green}伪装后端:${plain} ${DOMAIN_BACKEND[$d]}  ${green}证书状态:${plain} $cert_st"
         done
     fi
     
