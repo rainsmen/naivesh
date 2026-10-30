@@ -42,6 +42,9 @@ SCRIPT_PATH=""
 [[ -f "${BASH_SOURCE[0]}" ]] && SCRIPT_PATH="$(readlink -f "${BASH_SOURCE[0]}" 2>/dev/null)"
 SCRIPT_DIR="${SCRIPT_PATH%/*}"
 REPO_URL="${REPO_URL:-https://raw.githubusercontent.com/rainsmen/naivesh/main}"
+BUNDLED_CADDY_VERSION="v2.11.2"
+# 预编译 caddy 发布在 GitHub Releases，不放入 git 仓库
+RELEASE_URL="${RELEASE_URL:-https://github.com/rainsmen/naivesh/releases/download/caddy-${BUNDLED_CADDY_VERSION}}"
 
 INSTALL_SCRIPT="/usr/local/bin/naiveproxy.sh"
 SHORTCUT="/usr/bin/na"
@@ -70,8 +73,7 @@ RESOLVED_DROPIN="/etc/systemd/resolved.conf.d/99-naiveproxy-nat64.conf"
 NAT64_MARK="# naiveproxy-nat64"
 GO_MIN_MINOR=21
 
-# 随仓库分发的依赖包及其 SHA256 (与 assets/SHA256SUMS 保持一致)
-BUNDLED_CADDY_VERSION="v2.11.2"
+# 依赖包及其 SHA256 (与 assets/SHA256SUMS 保持一致)
 declare -gA ASSET_SHA256=(
     [acme.sh]="9059b81b424904fc574b2d2c314878dbeb69404f44d7bc5125e36f8f51f7d268"
     [caddy2-naive-linux-amd64.tar.gz]="a8b4a273e59bcb0994da0f06afc942e71e01f80f78f35b7c82913c2b573cc75e"
@@ -610,9 +612,17 @@ verify_sha256(){
     [[ -n $expect && -f $file ]] && [[ $(sha256sum "$file" | awk '{print $1}') == "$expect" ]]
 }
 
-# 优先使用本地 assets (脚本目录或 $SHARE_DIR)，否则从 $REPO_URL 下载；均需通过校验
+asset_url(){
+    case $1 in
+        acme.sh) echo "$REPO_URL/assets/$1" ;;
+        *) echo "$RELEASE_URL/$1" ;;
+    esac
+}
+
+# 优先使用本地 assets (脚本目录或 $SHARE_DIR)，否则下载 (acme.sh 来自仓库，caddy 来自 Releases)
+# 均需通过 SHA256 校验；下载成功后缓存到 $SHARE_DIR/assets
 fetch_asset(){
-    local name=$1 out=$2 expect dir
+    local name=$1 out=$2 expect dir url
     expect=${ASSET_SHA256[$name]}
     [[ -n $expect ]] || { red "未知的依赖包: $name"; return 1; }
 
@@ -625,13 +635,15 @@ fetch_asset(){
         fi
     done
 
-    yellow "正在下载 $REPO_URL/assets/$name ..."
-    download "$REPO_URL/assets/$name" "$out" || { red "下载失败: $REPO_URL/assets/$name"; rm -f "$out"; return 1; }
+    url=$(asset_url "$name")
+    yellow "正在下载 $url ..."
+    download "$url" "$out" || { red "下载失败: $url"; rm -f "$out"; return 1; }
     if ! verify_sha256 "$out" "$expect"; then
         red "下载的 $name SHA256 校验失败，已终止 (若使用自己的仓库，需同步更新脚本内的 ASSET_SHA256)"
         rm -f "$out"
         return 1
     fi
+    mkdir -p "$SHARE_DIR/assets" && cp -f "$out" "$SHARE_DIR/assets/$name" 2>/dev/null || true
 }
 
 #===============================================================================

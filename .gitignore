@@ -11,3 +11,6 @@
 
 # Scratch
 scratch/
+
+# 预编译二进制发布在 GitHub Releases，不提交到仓库
+assets/*.tar.gz

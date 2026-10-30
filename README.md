@@ -2,15 +2,17 @@
 
 这是一个经过全面深度重构与 Bug 修复的 NaiveProxy 管理脚本。支持多用户、多域名、自动化证书申请与续期、多端口复用、HTTP/3 (QUIC) 协议加速以及快捷分享。
 
-## 本地化依赖 (免除外部依赖源失效的烦恼)
-该仓库不仅包含了安装主脚本 `naiveproxy.sh`，还自带了所有的核心依赖包（存放在 `assets` 目录），包括：
-- `caddy2-naive-linux-amd64.tar.gz` (预编译 Caddy v2 + forwardproxy)
-- `caddy2-naive-linux-arm64.tar.gz`
-- `acme.sh`
+## 依赖包 (固定版本 + SHA256 校验)
+脚本使用以下固定版本的依赖包：
+- `acme.sh`：随仓库存放在 `assets` 目录
+- `caddy2-naive-linux-amd64.tar.gz` / `caddy2-naive-linux-arm64.tar.gz` (预编译 Caddy v2 + forwardproxy)：发布在 [GitHub Releases](https://github.com/rainsmen/naivesh/releases/tag/caddy-v2.11.2)，不放入 git 仓库
 
-若将本仓库克隆至本地运行，脚本将**优先使用本地 assets 资产**，无需额外联网下载依赖；若上传至 GitHub，也可随时一键远程拉取。安装完成后，当前架构所需的依赖包会复制到 `/usr/local/share/naiveproxy/assets`，之后通过快捷命令 `na` 运行时同样使用本地包。
+脚本按以下顺序查找依赖包：脚本目录下的 `assets/`、`/usr/local/share/naiveproxy/assets/`，都没有时再下载（acme.sh 来自仓库，caddy 来自 Releases）。下载成功后会缓存到 `/usr/local/share/naiveproxy/assets`，之后通过快捷命令 `na` 运行时直接使用缓存。离线环境可先把对应的 tar.gz 放进 `assets/` 目录。
 
-所有依赖包（本地或远程下载）都会按脚本内置的 SHA256 校验，校验值与 `assets/SHA256SUMS` 一致，不匹配时拒绝使用。组件版本、许可证与构建方式见 [THIRD_PARTY_NOTICES.md](THIRD_PARTY_NOTICES.md)。
+所有依赖包（本地或下载）都会按脚本内置的 SHA256 校验，校验值与 `assets/SHA256SUMS` 一致，不匹配时拒绝使用。组件版本、许可证与构建方式见 [THIRD_PARTY_NOTICES.md](THIRD_PARTY_NOTICES.md)。
+
+## 许可证
+本项目以 [GPL-3.0](LICENSE) 许可证发布。
 
 ---
 
@@ -35,14 +37,14 @@ git clone https://github.com/rainsmen/naivesh.git /root/naiveproxy
 cd /root/naiveproxy
 bash naiveproxy.sh
 ```
-*本地克隆运行会自动识别并使用本地 `assets` 资产，无需任何额外配置。*
+*本地克隆运行会直接使用仓库内的 acme.sh，caddy 预编译包首次安装时从 Releases 下载并校验。*
 
 ### 方式二：远程一键执行
 若您已将本仓库 Fork 或 Push 到自己的 GitHub 仓库，可在 VPS 上直接通过 `curl` 运行：
 ```bash
 bash <(curl -Ls https://raw.githubusercontent.com/rainsmen/naivesh/main/naiveproxy.sh)
 ```
-*(如使用个人仓库，可修改 `naiveproxy.sh` 开头的 `REPO_URL`，或通过环境变量传递：`REPO_URL="https://raw.githubusercontent.com/用户名/仓库名/分支" bash <(curl ...)`。若替换了 `assets` 中的文件，需同步更新脚本内的 `ASSET_SHA256` 与 `assets/SHA256SUMS`，否则校验不通过。)*
+*(如使用个人仓库，可修改 `naiveproxy.sh` 开头的 `REPO_URL`，或通过环境变量传递：`REPO_URL="https://raw.githubusercontent.com/用户名/仓库名/分支" bash <(curl ...)`。caddy 下载地址可用 `RELEASE_URL` 覆盖。若替换了依赖包，需同步更新脚本内的 `ASSET_SHA256` 与 `assets/SHA256SUMS`，否则校验不通过。)*
 
 ---
 

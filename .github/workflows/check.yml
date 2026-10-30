@@ -15,7 +15,13 @@ jobs:
         run: shellcheck naiveproxy.sh
       - name: assets checksum
         run: |
-          cd assets && sha256sum -c SHA256SUMS
+          # 预编译 caddy 位于 GitHub Releases，按脚本中的 RELEASE_URL 下载后校验
+          release_url=$(bash -c 'source naiveproxy.sh; echo "$RELEASE_URL"')
+          cd assets
+          for f in caddy2-naive-linux-amd64.tar.gz caddy2-naive-linux-arm64.tar.gz; do
+            curl -fsSL "$release_url/$f" -o "$f"
+          done
+          sha256sum -c SHA256SUMS
           # 脚本内置的 ASSET_SHA256 必须与 SHA256SUMS 一致
           while read -r hash name; do
             grep -q "\[${name}\]=\"${hash}\"" ../naiveproxy.sh || { echo "ASSET_SHA256 mismatch: $name"; exit 1; }

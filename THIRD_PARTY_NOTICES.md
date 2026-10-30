@@ -1,6 +1,6 @@
 # 第三方组件说明
 
-`assets/` 目录中随仓库分发以下第三方软件，各自遵循其原始许可证。SHA256 见 `assets/SHA256SUMS`。
+本项目分发以下第三方软件，各自遵循其原始许可证：`acme.sh` 位于仓库 `assets/` 目录，预编译 caddy 发布在 GitHub Releases (`caddy-v2.11.2`)。SHA256 见 `assets/SHA256SUMS`。
 
 | 文件 | 组件 | 版本 | 许可证 | 来源 |
 |---|---|---|---|---|
