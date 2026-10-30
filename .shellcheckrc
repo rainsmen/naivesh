@@ -1,0 +1,2 @@
+# readp 通过 read 间接赋值，shellcheck 无法追踪
+disable=SC2154
