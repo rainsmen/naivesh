@@ -12,7 +12,10 @@ jobs:
       - name: bash -n
         run: bash -n naiveproxy.sh
       - name: shellcheck
-        run: shellcheck naiveproxy.sh
+        run: |
+          pip install --quiet shellcheck-py==0.11.0.1
+          shellcheck --version | grep '^version'
+          shellcheck naiveproxy.sh
       - name: assets checksum
         run: |
           # 预编译 caddy 位于 GitHub Releases，按脚本中的 RELEASE_URL 下载后校验

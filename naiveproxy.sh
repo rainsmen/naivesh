@@ -643,7 +643,9 @@ fetch_asset(){
         rm -f "$out"
         return 1
     fi
-    mkdir -p "$SHARE_DIR/assets" && cp -f "$out" "$SHARE_DIR/assets/$name" 2>/dev/null || true
+    if mkdir -p "$SHARE_DIR/assets" 2>/dev/null; then
+        cp -f "$out" "$SHARE_DIR/assets/$name" 2>/dev/null || true
+    fi
 }
 
 #===============================================================================
