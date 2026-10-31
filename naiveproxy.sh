@@ -514,6 +514,7 @@ init_config(){
 
     # 自动加载已有配置并自愈历史遗留的服务单元、Crontab 与续期钩子 (均为本地操作)
     load_config
+    sync_ports_with_caddyfile
     upgrade_service_file
     fix_acme_cron_and_hooks
     return 0
@@ -597,6 +598,27 @@ get_proxy_port(){
     local p
     p=$(awk '$1 == "https_port" { print $2; exit }' "$CADDYFILE" 2>/dev/null)
     valid_port "$p" && echo "$p" || echo 443
+}
+
+# 现有 Caddyfile 中站点地址使用的端口 (每行一个，按出现顺序去重)
+caddyfile_ports(){
+    [[ -f $CADDYFILE ]] || return 0
+    awk '/^[^[:space:]#{].*\{[[:space:]]*$/ {
+            line = $0; sub(/\{.*/, "", line); n = split(line, a, /[[:space:],]+/)
+            for (i = 1; i <= n; i++) if (a[i] ~ /:[0-9]+$/) { p = a[i]; sub(/.*:/, "", p); if (!(p in seen)) { seen[p] = 1; print p } }
+        }' "$CADDYFILE"
+}
+
+# 旧版本或手工修改可能导致 ports.conf 与正在使用的 Caddyfile 不一致；
+# 以 Caddyfile 为准，避免重新生成配置时悄悄更换端口导致客户端断开
+sync_ports_with_caddyfile(){
+    local live=() p
+    mapfile -t live < <(caddyfile_ports)
+    for p in "${live[@]}"; do valid_port "$p" || return 0; done
+    [[ ${#live[@]} -gt 0 && "${live[*]}" != "${PROXY_PORTS[*]}" ]] || return 0
+    yellow "端口配置 (${PROXY_PORTS[*]}) 与当前 Caddyfile (${live[*]}) 不一致，已按 Caddyfile 更新端口配置"
+    PROXY_PORTS=("${live[@]}")
+    save_ports
 }
 
 #===============================================================================
