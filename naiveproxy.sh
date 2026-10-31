@@ -1451,6 +1451,8 @@ show_share(){
     local primary_port="${PROXY_PORTS[0]:-443}"
     local url_file="$NAIVE_DIR/URL.txt"
     mkdir -p "$NAIVE_DIR"
+    # 清理已删除用户的客户端配置 (含密码)
+    rm -f "$NAIVE_DIR"/v2rayn_*.json
     : > "$url_file"
     chmod 600 "$url_file"
 
