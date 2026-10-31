@@ -1334,8 +1334,13 @@ generate_caddyfile(){
         echo "    auto_https off"
         echo "}"
         echo
+        # CONNECT 请求的 Host 是代理目标而非本机域名，需要通配地址 (:端口) 接收；
+        # 放在首个域名的站点中，其余域名按 SNI 使用各自证书
+        local catch_all=""
+        for p in "${PROXY_PORTS[@]}"; do catch_all+=":${p}, "; done
         for d in "${domains[@]}"; do
-            local headers=""
+            local headers=$catch_all
+            catch_all=""
             for p in "${PROXY_PORTS[@]}"; do headers+="${d}:${p}, "; done
             echo "${headers%, } {"
             echo "    tls ${DOMAIN_CERT[$d]} ${DOMAIN_KEY[$d]}"
@@ -1680,8 +1685,8 @@ update_script(){
     mv -f "$tmp" "$INSTALL_SCRIPT" || { rm -f "$tmp"; return 1; }
     ln -sfn "$INSTALL_SCRIPT" "$SHORTCUT" || return 1
     green "脚本已更新至 $INSTALL_SCRIPT，请重新运行快捷命令 na。"
-    if [[ -n $SCRIPT_PATH && $SCRIPT_PATH != "$INSTALL_SCRIPT" ]]; then
-        yellow "当前运行的 $SCRIPT_PATH 未被修改 (如为 git 克隆目录，请使用 git pull 更新)"
+    if [[ -n $SCRIPT_PATH && $SCRIPT_PATH != "$INSTALL_SCRIPT" && -d $SCRIPT_DIR/.git ]]; then
+        yellow "当前运行的 $SCRIPT_PATH 位于 git 克隆目录，未被修改，请使用 git pull 更新"
     fi
     exit 0
 }
