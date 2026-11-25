@@ -5,17 +5,30 @@ on:
   pull_request:
 
 jobs:
-  shellcheck:
+  shellcheck-and-test:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
-      - name: bash -n
-        run: bash -n naiveproxy.sh
+      - name: bash syntax check
+        run: |
+          bash -n naiveproxy.sh
+          bash -n tests/test_naiveproxy.sh
       - name: shellcheck
         run: |
-          pip install --quiet shellcheck-py==0.11.0.1
-          shellcheck --version | grep '^version'
-          shellcheck naiveproxy.sh
+          python3 -m venv /tmp/sc-venv
+          /tmp/sc-venv/bin/pip install --quiet shellcheck-py==0.11.0.1
+          /tmp/sc-venv/bin/shellcheck --version | grep '^version'
+          /tmp/sc-venv/bin/shellcheck -x -P SCRIPTDIR naiveproxy.sh tests/test_naiveproxy.sh
+          # 提取嵌入式 acme-hook.sh 并按 POSIX sh 严格校验
+          bash -c '
+            source ./naiveproxy.sh
+            CONFIG_DIR=$(mktemp -d)
+            ACME_HOOK="$CONFIG_DIR/acme-hook.sh"
+            write_acme_hook
+            sh -n "$ACME_HOOK"
+            /tmp/sc-venv/bin/shellcheck -s sh "$ACME_HOOK"
+            rm -rf "$CONFIG_DIR"
+          '
       - name: assets checksum
         run: |
           # 预编译 caddy 位于 GitHub Releases，按脚本中的 RELEASE_URL 下载后校验
@@ -27,5 +40,7 @@ jobs:
           sha256sum -c SHA256SUMS
           # 脚本内置的 ASSET_SHA256 必须与 SHA256SUMS 一致
           while read -r hash name; do
-            grep -q "\[${name}\]=\"${hash}\"" ../naiveproxy.sh || { echo "ASSET_SHA256 mismatch: $name"; exit 1; }
+            grep -Fq "[${name}]=\"${hash}\"" ../naiveproxy.sh || { echo "ASSET_SHA256 mismatch: $name"; exit 1; }
           done < SHA256SUMS
+      - name: unit and live caddy tests
+        run: bash tests/test_naiveproxy.sh

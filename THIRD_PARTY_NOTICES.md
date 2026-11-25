@@ -8,10 +8,10 @@
 | `caddy2-naive-linux-amd64.tar.gz` / `caddy2-naive-linux-arm64.tar.gz` | Caddy | v2.11.2 | Apache-2.0 | https://github.com/caddyserver/caddy |
 | 同上 (编译进 caddy) | forwardproxy (naive 分支) | klzgrad/forwardproxy@naive | Apache-2.0 | https://github.com/klzgrad/forwardproxy |
 
-预编译 caddy 由 xcaddy 构建 (Go 1.25.8)，等价于：
+预编译 caddy 可通过仓库内置的 GitHub Actions 工作流 [.github/workflows/build-caddy.yml](.github/workflows/build-caddy.yml) 使用 `xcaddy` 可复现构建，等价于：
 
 ```bash
 xcaddy build v2.11.2 --with github.com/caddyserver/forwardproxy@caddy2=github.com/klzgrad/forwardproxy@naive
 ```
 
-可用 `caddy build-info` 查看二进制内记录的构建信息。
+可用 `caddy-naive build-info` 查看二进制内记录的构建信息。

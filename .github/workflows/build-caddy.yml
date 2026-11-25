@@ -1,0 +1,82 @@
+name: build-caddy
+
+on:
+  workflow_dispatch:
+    inputs:
+      caddy_version:
+        description: "Caddy tag to build (e.g. v2.11.2)"
+        required: true
+        default: "v2.11.2"
+      forwardproxy_ref:
+        description: "klzgrad/forwardproxy git ref or commit"
+        required: true
+        default: "naive"
+      publish_release:
+        description: "Create/update GitHub Release caddy-<version>"
+        type: boolean
+        default: false
+
+permissions:
+  contents: write
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    strategy:
+      matrix:
+        arch: [amd64, arm64]
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version: "1.25.x"
+      - name: Install xcaddy
+        run: go install github.com/caddyserver/xcaddy/cmd/xcaddy@latest
+      - name: Build caddy (${{ matrix.arch }})
+        env:
+          CGO_ENABLED: "0"
+          GOOS: linux
+          GOARCH: ${{ matrix.arch }}
+        run: |
+          mkdir -p dist
+          "$(go env GOPATH)/bin/xcaddy" build "${{ inputs.caddy_version }}" \
+            --output dist/caddy \
+            --with "github.com/caddyserver/forwardproxy@caddy2=github.com/klzgrad/forwardproxy@${{ inputs.forwardproxy_ref }}"
+          chmod 755 dist/caddy
+          if [ "${{ matrix.arch }}" = "amd64" ]; then
+            dist/caddy version
+            dist/caddy list-modules | grep -Fxq 'http.handlers.forward_proxy'
+          fi
+          tar -C dist -czf "caddy2-naive-linux-${{ matrix.arch }}.tar.gz" caddy
+          sha256sum "caddy2-naive-linux-${{ matrix.arch }}.tar.gz"
+      - uses: actions/upload-artifact@v4
+        with:
+          name: caddy-${{ matrix.arch }}
+          path: caddy2-naive-linux-${{ matrix.arch }}.tar.gz
+
+  release:
+    needs: build
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/download-artifact@v4
+        with:
+          path: dist
+          merge-multiple: true
+      - name: Compute checksums
+        run: |
+          cp assets/acme.sh dist/acme.sh
+          (cd dist && sha256sum acme.sh caddy2-naive-linux-amd64.tar.gz caddy2-naive-linux-arm64.tar.gz) | tee dist/SHA256SUMS
+      - name: Publish GitHub Release
+        if: ${{ inputs.publish_release }}
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          tag="caddy-${{ inputs.caddy_version }}"
+          if gh release view "$tag" >/dev/null 2>&1; then
+            gh release upload "$tag" dist/caddy2-naive-linux-amd64.tar.gz dist/caddy2-naive-linux-arm64.tar.gz dist/SHA256SUMS --clobber
+          else
+            gh release create "$tag" dist/caddy2-naive-linux-amd64.tar.gz dist/caddy2-naive-linux-arm64.tar.gz dist/SHA256SUMS \
+              --title "Caddy ${{ inputs.caddy_version }} + NaiveProxy forwardproxy" \
+              --notes "Built reproducibly with xcaddy (${{ inputs.caddy_version }}, forwardproxy@${{ inputs.forwardproxy_ref }})."
+          fi
